@@ -10,7 +10,7 @@ from openai import OpenAI
 import markdown
 
 # --- Pega tu clave de API aquí ---
-API_KEY = os.environ.get("OPENAI_API_KEY")
+API_KEY_AQUI = os.environ.get("OPENAI_API_KEY")
 
 
 # --- Configuración ---
