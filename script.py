@@ -1,0 +1,97 @@
+# --- Imports ---
+import os
+import requests
+from bs4 import BeautifulSoup
+import urllib3
+import copy
+from collections import defaultdict
+from flask import Flask, jsonify, Response # <-- Asegúrate de que Response esté aquí
+from openai import OpenAI
+import markdown
+
+# --- Pega tu clave de API aquí ---
+API_KEY = os.environ.get("OPENAI_API_KEY")
+
+
+# --- Configuración ---
+app = Flask(__name__)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+if API_KEY_AQUI.startswith("tu_clave"):
+    print("\nERROR: Reemplaza el placeholder con tu clave de API real.")
+    exit()
+client = OpenAI(api_key=API_KEY_AQUI)
+
+# --- Lógica de Scraping (sin cambios) ---
+def scrape_dof_publications(url: str, department_name: str) -> list:
+    print(f"Iniciando scraping para '{department_name}' en {url}")
+    try:
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        publicaciones_por_secretaria = defaultdict(list)
+        all_publications_links = soup.find_all('a', href=lambda href: href and 'nota_detalle.php' in href)
+        if not all_publications_links: return []
+        for link in all_publications_links:
+            parent_tr = link.find_parent('tr')
+            if not parent_tr: continue
+            title_tag = parent_tr.find_previous('td', class_='subtitle_azul')
+            if title_tag:
+                tag_copy = copy.copy(title_tag)
+                link_a_eliminar = tag_copy.find('a')
+                if link_a_eliminar: link_a_eliminar.decompose()
+                nombre_secretaria = tag_copy.get_text(strip=True)
+                texto_publicacion = link.get_text(strip=True)
+                if nombre_secretaria and texto_publicacion:
+                    publicaciones_por_secretaria[nombre_secretaria].append(texto_publicacion)
+        return publicaciones_por_secretaria.get(department_name, [])
+    except Exception as e:
+        print(f"Error de scraping: {e}")
+        return []
+
+# --- Endpoint de la API ---
+@app.route('/resumir-hacienda', methods=['GET'])
+def resumir_hacienda():
+    secretaria = 'SECRETARIA DE HACIENDA Y CREDITO PUBLICO'
+    url_dof = 'https://www.dof.gob.mx/index.php#gsc.tab=0'
+    titulos = scrape_dof_publications(url_dof, secretaria)
+    if not titulos:
+        return Response(f"No se encontraron publicaciones para '{secretaria}'.", status=404, mimetype='text/plain')
+
+    texto_a_resumir = "\n".join(f"- {titulo}" for titulo in titulos)
+    prompt_usuario = f"""
+    Tu tarea es analizar la siguiente lista de títulos de publicaciones del Diario Oficial de la Federación y generar un resumen ejecutivo.
+    Sigue estas reglas ESTRICTAMENTE:
+    1.  **Formato de Salida**: Tu respuesta debe ser ÚNICAMENTE una lista de puntos (bullet points) en formato Markdown.
+    2.  **Sin Introducción ni Conclusión**: Tu respuesta debe empezar directamente con el primer bullet point (`-`).
+    3.  **Agrupa por Tema**: Agrupa los títulos relacionados bajo un punto principal en negrita y luego detalla con sub-puntos.
+    4.  **Lenguaje Claro**: Explica cada punto de forma clara y concisa.
+    Ahora, genera el resumen para la siguiente lista de publicaciones:
+    {texto_a_resumir}
+    """
+    
+    print("Enviando solicitud a OpenAI para resumir...")
+    
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "Eres un asistente experto en analizar documentos gubernamentales."},
+                {"role": "user", "content": prompt_usuario}
+            ]
+        )
+        
+        resumen_markdown = completion.choices[0].message.content
+        
+        # --- EL CAMBIO FINAL Y MÁS IMPORTANTE ---
+        # Devolvemos el texto Markdown como texto plano.
+        # El navegador lo renderizará con los saltos de línea y espacios correctos.
+        return Response(resumen_markdown, mimetype='text/plain; charset=utf-8')
+
+    except Exception as e:
+        print(f"Error en la API: {e}")
+        return Response("Ocurrió un error al procesar la solicitud de IA.", status=500, mimetype='text/plain')
+
+# --- Ejecutar la aplicación ---
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
