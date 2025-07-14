@@ -5,25 +5,25 @@ from bs4 import BeautifulSoup
 import urllib3
 import copy
 from collections import defaultdict
-from flask import Flask, jsonify, Response # <-- Asegúrate de que Response esté aquí
+from flask import Flask, Response
 from openai import OpenAI
 import markdown
 
-# --- Pega tu clave de API aquí ---
-API_KEY_AQUI = os.environ.get("OPENAI_API_KEY")
-
+# --- CONFIGURACIÓN SEGURA DE LA CLAVE DE API ---
+API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # --- Configuración ---
 app = Flask(__name__)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-if API_KEY_AQUI.startswith("tu_clave"):
-    print("\nERROR: Reemplaza el placeholder con tu clave de API real.")
-    exit()
-client = OpenAI(api_key=API_KEY_AQUI)
+if not API_KEY:
+    print("\nERROR: La variable de entorno OPENAI_API_KEY no está configurada.")
+client = OpenAI(api_key=API_KEY)
+
 
 # --- Lógica de Scraping (sin cambios) ---
 def scrape_dof_publications(url: str, department_name: str) -> list:
+    # ... (esta función se queda exactamente igual) ...
     print(f"Iniciando scraping para '{department_name}' en {url}")
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=15)
@@ -49,11 +49,12 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
         print(f"Error de scraping: {e}")
         return []
 
+
 # --- Endpoint de la API ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
     secretaria = 'SECRETARIA DE HACIENDA Y CREDITO PUBLICO'
-    url_dof = 'https://www.dof.gob.mx/index.php#gsc.tab=0'
+    url_dof = 'https://www.dof.gob.mx/' # Usando la URL principal para obtener lo de hoy
     titulos = scrape_dof_publications(url_dof, secretaria)
     if not titulos:
         return Response(f"No se encontraron publicaciones para '{secretaria}'.", status=404, mimetype='text/plain')
@@ -83,10 +84,11 @@ def resumir_hacienda():
         
         resumen_markdown = completion.choices[0].message.content
         
-        # --- EL CAMBIO FINAL Y MÁS IMPORTANTE ---
-        # Devolvemos el texto Markdown como texto plano.
-        # El navegador lo renderizará con los saltos de línea y espacios correctos.
-        return Response(resumen_markdown, mimetype='text/plain; charset=utf-8')
+        # Convertimos el Markdown a un fragmento de HTML (<ul>, <li>, etc.)
+        resumen_html_body = markdown.markdown(resumen_markdown, extensions=['fenced_code'])
+        
+        # Devolvemos el fragmento de HTML como texto con el tipo de contenido 'text/html'
+        return Response(resumen_html_body, mimetype='text/html; charset=utf-8')
 
     except Exception as e:
         print(f"Error en la API: {e}")
@@ -94,4 +96,4 @@ def resumir_hacienda():
 
 # --- Ejecutar la aplicación ---
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
