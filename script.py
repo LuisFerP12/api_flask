@@ -18,13 +18,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 if not API_KEY:
     print("\nERROR: La variable de entorno OPENAI_API_KEY no está configurada.")
-    # Considera salir o manejar este caso de forma más robusta
-    # exit(1) 
 client = OpenAI(api_key=API_KEY)
 
 
 # --- Lógica de Scraping (sin cambios) ---
 def scrape_dof_publications(url: str, department_name: str) -> list:
+    # ... (esta función se queda exactamente igual) ...
     print(f"Iniciando scraping para '{department_name}' en {url}")
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=15)
@@ -51,7 +50,7 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
         return []
 
 
-# --- Endpoint de la API (CON EL PROMPT CORREGIDO) ---
+# --- Endpoint de la API ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
     secretaria = 'SECRETARIA DE HACIENDA Y CREDITO PUBLICO'
@@ -61,17 +60,13 @@ def resumir_hacienda():
         return Response(f"No se encontraron publicaciones para '{secretaria}'.", status=404, mimetype='text/plain')
 
     texto_a_resumir = "\n".join(f"- {titulo}" for titulo in titulos)
-    
-    # --- PROMPT MEJORADO ---
     prompt_usuario = f"""
     Tu tarea es analizar la siguiente lista de títulos de publicaciones del Diario Oficial de la Federación y generar un resumen ejecutivo.
     Sigue estas reglas ESTRICTAMENTE:
-    1.  **Formato de Salida**: Tu respuesta debe ser ÚNICAMENTE en formato Markdown.
-    2.  **Título de Grupo**: Agrupa los títulos relacionados bajo un encabezado temático en negrita (ejemplo: **Modificaciones a Anexos**). ESTE TÍTULO NO DEBE LLEVAR UN GUION (-) O ASTERISCO (*) AL INICIO.
-    3.  **Detalles del Grupo**: Debajo de cada título en negrita, detalla las publicaciones correspondientes usando una lista de puntos (con guion `-`).
-    4.  **Sin Introducción ni Conclusión**: Tu respuesta debe empezar directamente con el primer título en negrita. No agregues frases como "Aquí está el resumen:" o similares.
-    5.  **Lenguaje Claro**: Explica cada punto de forma clara y concisa.
-    
+    1.  **Formato de Salida**: Tu respuesta debe ser ÚNICAMENTE una lista de puntos (bullet points) en formato Markdown.
+    2.  **Sin Introducción ni Conclusión**: Tu respuesta debe empezar directamente con el primer bullet point (`-`).
+    3.  **Agrupa por Tema**: Agrupa los títulos relacionados bajo un punto principal en negrita y luego detalla con sub-puntos.
+    4.  **Lenguaje Claro**: Explica cada punto de forma clara y concisa.
     Ahora, genera el resumen para la siguiente lista de publicaciones:
     {texto_a_resumir}
     """
@@ -82,7 +77,7 @@ def resumir_hacienda():
         completion = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Eres un asistente experto en analizar documentos gubernamentales y sigues las instrucciones de formato al pie de la letra."},
+                {"role": "system", "content": "Eres un asistente experto en analizar documentos gubernamentales."},
                 {"role": "user", "content": prompt_usuario}
             ]
         )
@@ -101,6 +96,4 @@ def resumir_hacienda():
 
 # --- Ejecutar la aplicación ---
 if __name__ == '__main__':
-    # Es recomendable usar un servidor de producción como gunicorn en lugar del de desarrollo de Flask
-    # Para desarrollo, esto está bien:
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
