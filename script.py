@@ -84,9 +84,12 @@ def resumir_hacienda():
         
         resumen_markdown = completion.choices[0].message.content
         
+        # 1. Convertimos el Markdown a un fragmento de HTML.
+        #    Esto creará una única lista <ul> con todos los elementos como <li>.
         resumen_html_body = markdown.markdown(resumen_markdown, extensions=['fenced_code'])
         
-        # --- INICIO DE LA NUEVA LÓGICA (MODIFICAR EN LUGAR DE RECONSTRUIR) ---
+        # --- INICIO DE LA NUEVA LÓGICA DE REESTRUCTURACIÓN ---
+        # El objetivo es transformar una lista grande en "párrafo de encabezado" + "lista de sub-elementos".
         
         soup = BeautifulSoup(resumen_html_body, 'html.parser')
         ul_tag = soup.find('ul')
@@ -94,19 +97,33 @@ def resumir_hacienda():
         if not ul_tag: # Si no se generó una lista, devolver el HTML tal cual
             return Response(resumen_html_body, mimetype='text/html; charset=utf-8')
 
-        # 1. Iteramos sobre los elementos <li> de la lista generada.
+        html_fragments = []  # Aquí guardaremos los fragmentos de HTML reestructurados.
+        current_sub_list = [] # Almacenará temporalmente los <li> de un grupo.
+
+        # 2. Iteramos sobre todos los elementos <li> de la lista original.
         for li in ul_tag.find_all('li', recursive=False):
-            # 2. Reutilizamos la misma lógica para identificar un encabezado.
+            # 3. Identificamos si el <li> es un encabezado (si su único contenido es <strong>).
             strong_child = li.find('strong')
             is_header = strong_child and li.get_text(strip=True) == strong_child.get_text(strip=True)
 
-            # 3. Si es un encabezado, simplemente le añadimos la clase 'sin-punto'.
-            #    BeautifulSoup modifica el objeto 'li' en el 'soup' directamente.
             if is_header:
-                li['class'] = 'sin-punto'
+                # 4. Si encontramos un nuevo encabezado, primero procesamos la lista anterior.
+                if current_sub_list:
+                    html_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
+                    current_sub_list = [] # Reseteamos la lista de sub-elementos.
 
-        # 4. Convertimos el objeto 'ul_tag' modificado (que ahora tiene las clases) a string.
-        html_final = str(ul_tag)
+                # 5. Transformamos el <li> del encabezado en un párrafo <p> para que no sea un item de lista.
+                html_fragments.append(f"<p>{str(strong_child)}</p>")
+            else:
+                # 6. Si no es un encabezado, es un sub-elemento. Lo añadimos a la lista actual.
+                current_sub_list.append(str(li))
+
+        # 7. Después del bucle, procesamos la última lista de sub-elementos que quedó pendiente.
+        if current_sub_list:
+            html_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
+            
+        # 8. Unimos todos los fragmentos para crear el HTML final y bien estructurado.
+        html_final = "".join(html_fragments)
         # --- FIN DE LA NUEVA LÓGICA ---
 
         return Response(html_final, mimetype='text/html; charset=utf-8')
