@@ -50,7 +50,7 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
         return []
 
 
-# --- Endpoint de la API ---
+# --- Endpoint de la API (con la modificación) ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
     secretaria = 'SECRETARIA DE HACIENDA Y CREDITO PUBLICO'
@@ -84,11 +84,36 @@ def resumir_hacienda():
         
         resumen_markdown = completion.choices[0].message.content
         
-        # Convertimos el Markdown a un fragmento de HTML (<ul>, <li>, etc.)
+        # 1. Convertimos el Markdown a un fragmento de HTML (<ul>, <li>, etc.)
         resumen_html_body = markdown.markdown(resumen_markdown, extensions=['fenced_code'])
         
-        # Devolvemos el fragmento de HTML como texto con el tipo de contenido 'text/html'
-        return Response(resumen_html_body, mimetype='text/html; charset=utf-8')
+        # --- INICIO DE LA MODIFICACIÓN ---
+        # El objetivo es quitar el "punto" de los <li> que son encabezados en negrita.
+        
+        # 2. Usamos BeautifulSoup para analizar este fragmento de HTML.
+        #    Esto nos permite manipular el HTML de forma segura y precisa.
+        soup_html = BeautifulSoup(resumen_html_body, 'html.parser')
+
+        # 3. Buscamos todas las etiquetas <li>.
+        for li_tag in soup_html.find_all('li'):
+            # 4. Verificamos si el <li> contiene una etiqueta <strong> como hijo principal.
+            #    La condición comprueba si el texto del <li> (sin espacios) es idéntico
+            #    al texto de su hijo <strong> (sin espacios). Esto confirma que el <strong>
+            #    es el único contenido textual del <li>, identificándolo como un encabezado.
+            strong_child = li_tag.find('strong')
+            if strong_child and li_tag.get_text(strip=True) == strong_child.get_text(strip=True):
+                # 5. Si es un encabezado, le añadimos un estilo CSS para quitar el bullet point.
+                #    'list-style-type: none;' oculta el punto.
+                #    'margin-left: -1.5em;' compensa la sangría que el navegador añade
+                #    por defecto a los elementos de lista, alineándolo con el resto.
+                li_tag['style'] = 'list-style-type: none; margin-left: -1.5em;'
+        
+        # 6. Convertimos el objeto BeautifulSoup modificado de nuevo a un string de HTML.
+        html_modificado = str(soup_html)
+        # --- FIN DE LA MODIFICACIÓN ---
+
+        # 7. Devolvemos el HTML modificado como respuesta.
+        return Response(html_modificado, mimetype='text/html; charset=utf-8')
 
     except Exception as e:
         print(f"Error en la API: {e}")
