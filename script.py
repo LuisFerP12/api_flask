@@ -120,7 +120,7 @@ def resumir_hacienda():
 
         # 7. Después del bucle, procesamos la última lista de sub-elementos que quedó pendiente.
         if current_sub_list:
-            html_fragments.append(f'<p style="margin-left: 20px;">{str(strong_child)}</p>')
+            html_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
             
         # 8. Unimos todos los fragmentos para crear el HTML final y bien estructurado.
         html_final = "".join(html_fragments)
