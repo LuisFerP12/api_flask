@@ -10,6 +10,8 @@ from openai import OpenAI
 import markdown
 
 # --- CONFIGURACIÓN SEGURA DE LA CLAVE DE API ---
+# Asegúrate de tener tu clave de API de OpenAI en una variable de entorno.
+# En tu terminal, ejecuta: export OPENAI_API_KEY='tu_clave_aqui'
 API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # --- Configuración ---
@@ -18,12 +20,19 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 if not API_KEY:
     print("\nERROR: La variable de entorno OPENAI_API_KEY no está configurada.")
-client = OpenAI(api_key=API_KEY)
+    # Si no hay clave, la aplicación no funcionará, así que es mejor salir.
+    # exit() # Descomenta si prefieres que el script se detenga aquí.
+    client = None # Evitar que falle al inicializar
+else:
+    client = OpenAI(api_key=API_KEY)
 
 
 # --- Lógica de Scraping (sin cambios) ---
 def scrape_dof_publications(url: str, department_name: str) -> list:
-    # ... (esta función se queda exactamente igual) ...
+    """
+    Realiza scraping en la página principal del DOF para obtener los títulos de las publicaciones
+    de una secretaría específica.
+    """
     print(f"Iniciando scraping para '{department_name}' en {url}")
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=15)
@@ -31,7 +40,9 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
         soup = BeautifulSoup(response.text, 'html.parser')
         publicaciones_por_secretaria = defaultdict(list)
         all_publications_links = soup.find_all('a', href=lambda href: href and 'nota_detalle.php' in href)
-        if not all_publications_links: return []
+        if not all_publications_links:
+            print("No se encontraron enlaces de publicaciones.")
+            return []
         for link in all_publications_links:
             parent_tr = link.find_parent('tr')
             if not parent_tr: continue
@@ -46,16 +57,20 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
                     publicaciones_por_secretaria[nombre_secretaria].append(texto_publicacion)
         return publicaciones_por_secretaria.get(department_name, [])
     except Exception as e:
-        print(f"Error de scraping: {e}")
+        print(f"Error durante el scraping: {e}")
         return []
 
 
-# --- Endpoint de la API (con la nueva lógica de reestructuración de HTML) ---
+# --- Endpoint de la API (con la lógica de CSS para estilizar) ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
+    if not client:
+        return Response("Error: La clave de API de OpenAI no está configurada.", status=500, mimetype='text/plain')
+        
     secretaria = 'SECRETARIA DE HACIENDA Y CREDITO PUBLICO'
     url_dof = 'https://www.dof.gob.mx/'
     titulos = scrape_dof_publications(url_dof, secretaria)
+    
     if not titulos:
         return Response(f"No se encontraron publicaciones para '{secretaria}'.", status=404, mimetype='text/plain')
 
@@ -64,9 +79,15 @@ def resumir_hacienda():
     Tu tarea es analizar la siguiente lista de títulos de publicaciones del Diario Oficial de la Federación y generar un resumen ejecutivo.
     Sigue estas reglas ESTRICTAMENTE:
     1.  **Formato de Salida**: Tu respuesta debe ser ÚNICAMENTE una lista de puntos (bullet points) en formato Markdown.
-    2.  **Sin Introducción ni Conclusión**: Tu respuesta debe empezar directamente con el primer bullet point (`-`).
-    3.  **Agrupa por Tema**: Agrupa los títulos relacionados bajo un punto principal en negrita y luego detalla con sub-puntos.
+    2.  **Sin Introducción ni Conclusión**: Tu respuesta debe empezar directamente con el primer bullet point (`-`). No incluyas frases como "Aquí está el resumen:".
+    3.  **Agrupa por Tema**: Agrupa los títulos relacionados bajo un punto principal en negrita y luego detalla con sub-puntos con sangría. Por ejemplo:
+        - **Tema Principal 1**
+          - Detalle A sobre el tema 1.
+          - Detalle B sobre el tema 1.
+        - **Tema Principal 2**
+          - Detalle C sobre el tema 2.
     4.  **Lenguaje Claro**: Explica cada punto de forma clara y concisa.
+    
     Ahora, genera el resumen para la siguiente lista de publicaciones:
     {texto_a_resumir}
     """
@@ -77,7 +98,7 @@ def resumir_hacienda():
         completion = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Eres un asistente experto en analizar documentos gubernamentales."},
+                {"role": "system", "content": "Eres un asistente experto en analizar documentos gubernamentales y generar resúmenes ejecutivos en formato Markdown."},
                 {"role": "user", "content": prompt_usuario}
             ]
         )
@@ -85,53 +106,57 @@ def resumir_hacienda():
         resumen_markdown = completion.choices[0].message.content
         
         # 1. Convertimos el Markdown a un fragmento de HTML.
-        #    Esto creará una única lista <ul> con todos los elementos como <li>.
+        #    Esto creará una estructura de listas anidadas (ul > li > ul > li) que es perfecta.
         resumen_html_body = markdown.markdown(resumen_markdown, extensions=['fenced_code'])
         
-        # --- INICIO DE LA NUEVA LÓGICA DE REESTRUCTURACIÓN ---
-        # El objetivo es transformar una lista grande en "párrafo de encabezado" + "lista de sub-elementos".
+        # --- INICIO DE LA NUEVA LÓGICA CON CSS ---
         
-        soup = BeautifulSoup(resumen_html_body, 'html.parser')
-        ul_tag = soup.find('ul')
+        # 2. Definimos el CSS que se inyectará en el HTML para dar estilo.
+        css_styles = """
+        <style>
+            body { 
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                line-height: 1.6;
+                margin: 2em;
+            }
+            /* Seleccionamos SÓLO los <li> que son hijos directos del <ul> principal */
+            /* Estos son nuestros encabezados temáticos */
+            body > ul > li {
+                list-style-type: none; /* Quitamos el bullet point del encabezado */
+                margin-left: -20px;    /* Compensamos la sangría para alinear el texto en negrita */
+                margin-bottom: 1em;    /* Añadimos un espacio vertical entre grupos para mayor claridad */
+            }
+            /* Damos un poco de espacio entre el encabezado y su lista de sub-puntos */
+            body > ul > li > ul {
+                margin-top: 0.5em;
+            }
+        </style>
+        """
         
-        if not ul_tag: # Si no se generó una lista, devolver el HTML tal cual
-            return Response(resumen_html_body, mimetype='text/html; charset=utf-8')
-
-        html_fragments = []  # Aquí guardaremos los fragmentos de HTML reestructurados.
-        current_sub_list = [] # Almacenará temporalmente los <li> de un grupo.
-
-        # 2. Iteramos sobre todos los elementos <li> de la lista original.
-        for li in ul_tag.find_all('li', recursive=False):
-            # 3. Identificamos si el <li> es un encabezado (si su único contenido es <strong>).
-            strong_child = li.find('strong')
-            is_header = strong_child and li.get_text(strip=True) == strong_child.get_text(strip=True)
-
-            if is_header:
-                # 4. Si encontramos un nuevo encabezado, primero procesamos la lista anterior.
-                if current_sub_list:
-                    html_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
-                    current_sub_list = [] # Reseteamos la lista de sub-elementos.
-
-                # 5. Transformamos el <li> del encabezado en un párrafo <p> para que no sea un item de lista.
-                html_fragments.append(f'<p style="padding-left: 20px;">{str(strong_child)}</p>')
-            else:
-                # 6. Si no es un encabezado, es un sub-elemento. Lo añadimos a la lista actual.
-                current_sub_list.append(str(li))
-
-        # 7. Después del bucle, procesamos la última lista de sub-elementos que quedó pendiente.
-        if current_sub_list:
-            html_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
-            
-        # 8. Unimos todos los fragmentos para crear el HTML final y bien estructurado.
-        html_final = "".join(html_fragments)
+        # 3. Creamos un documento HTML completo, inyectando nuestros estilos y el contenido.
+        html_final = f"""
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Resumen del DOF - Secretaría de Hacienda</title>
+            {css_styles}
+        </head>
+        <body>
+            {resumen_html_body}
+        </body>
+        </html>
+        """
         # --- FIN DE LA NUEVA LÓGICA ---
 
         return Response(html_final, mimetype='text/html; charset=utf-8')
 
     except Exception as e:
-        print(f"Error en la API: {e}")
+        print(f"Error en la API de OpenAI: {e}")
         return Response("Ocurrió un error al procesar la solicitud de IA.", status=500, mimetype='text/plain')
 
 # --- Ejecutar la aplicación ---
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # Usar el puerto 5001 es común para desarrollo local si el 5000 está ocupado.
+    app.run(host='0.0.0.0', port=5001, debug=True)
