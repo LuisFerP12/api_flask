@@ -113,7 +113,7 @@ def resumir_hacienda():
                     current_sub_list = [] # Reseteamos la lista de sub-elementos.
 
                 # 5. Transformamos el <li> del encabezado en un párrafo <p> para que no sea un item de lista.
-                html_fragments.append(f"<p>{str(strong_child)}</p>")
+                html_fragments.append(f'<p style="padding-left: 20px;">{str(strong_child)}</p>')
             else:
                 # 6. Si no es un encabezado, es un sub-elemento. Lo añadimos a la lista actual.
                 current_sub_list.append(str(li))
