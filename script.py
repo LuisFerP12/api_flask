@@ -50,11 +50,11 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
         return []
 
 
-# --- Endpoint de la API (con la modificación) ---
+# --- Endpoint de la API (con la nueva lógica de reestructuración de HTML) ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
     secretaria = 'SECRETARIA DE HACIENDA Y CREDITO PUBLICO'
-    url_dof = 'https://www.dof.gob.mx/' # Usando la URL principal para obtener lo de hoy
+    url_dof = 'https://www.dof.gob.mx/'
     titulos = scrape_dof_publications(url_dof, secretaria)
     if not titulos:
         return Response(f"No se encontraron publicaciones para '{secretaria}'.", status=404, mimetype='text/plain')
@@ -84,36 +84,49 @@ def resumir_hacienda():
         
         resumen_markdown = completion.choices[0].message.content
         
-        # 1. Convertimos el Markdown a un fragmento de HTML (<ul>, <li>, etc.)
+        # 1. Convertimos el Markdown a un fragmento de HTML.
+        #    Esto creará una única lista <ul> con todos los elementos como <li>.
         resumen_html_body = markdown.markdown(resumen_markdown, extensions=['fenced_code'])
         
-        # --- INICIO DE LA MODIFICACIÓN ---
-        # El objetivo es quitar el "punto" de los <li> que son encabezados en negrita.
+        # --- INICIO DE LA NUEVA LÓGICA DE REESTRUCTURACIÓN ---
+        # El objetivo es transformar una lista grande en "párrafo de encabezado" + "lista de sub-elementos".
         
-        # 2. Usamos BeautifulSoup para analizar este fragmento de HTML.
-        #    Esto nos permite manipular el HTML de forma segura y precisa.
-        soup_html = BeautifulSoup(resumen_html_body, 'html.parser')
-
-        # 3. Buscamos todas las etiquetas <li>.
-        for li_tag in soup_html.find_all('li'):
-            # 4. Verificamos si el <li> contiene una etiqueta <strong> como hijo principal.
-            #    La condición comprueba si el texto del <li> (sin espacios) es idéntico
-            #    al texto de su hijo <strong> (sin espacios). Esto confirma que el <strong>
-            #    es el único contenido textual del <li>, identificándolo como un encabezado.
-            strong_child = li_tag.find('strong')
-            if strong_child and li_tag.get_text(strip=True) == strong_child.get_text(strip=True):
-                # 5. Si es un encabezado, le añadimos un estilo CSS para quitar el bullet point.
-                #    'list-style-type: none;' oculta el punto.
-                #    'margin-left: -1.5em;' compensa la sangría que el navegador añade
-                #    por defecto a los elementos de lista, alineándolo con el resto.
-                li_tag['style'] = 'list-style-type: none; margin-left: -1.5em;'
+        soup = BeautifulSoup(resumen_html_body, 'html.parser')
+        ul_tag = soup.find('ul')
         
-        # 6. Convertimos el objeto BeautifulSoup modificado de nuevo a un string de HTML.
-        html_modificado = str(soup_html)
-        # --- FIN DE LA MODIFICACIÓN ---
+        if not ul_tag: # Si no se generó una lista, devolver el HTML tal cual
+            return Response(resumen_html_body, mimetype='text/html; charset=utf-8')
 
-        # 7. Devolvemos el HTML modificado como respuesta.
-        return Response(html_modificado, mimetype='text/html; charset=utf-8')
+        html_fragments = []  # Aquí guardaremos los fragmentos de HTML reestructurados.
+        current_sub_list = [] # Almacenará temporalmente los <li> de un grupo.
+
+        # 2. Iteramos sobre todos los elementos <li> de la lista original.
+        for li in ul_tag.find_all('li', recursive=False):
+            # 3. Identificamos si el <li> es un encabezado (si su único contenido es <strong>).
+            strong_child = li.find('strong')
+            is_header = strong_child and li.get_text(strip=True) == strong_child.get_text(strip=True)
+
+            if is_header:
+                # 4. Si encontramos un nuevo encabezado, primero procesamos la lista anterior.
+                if current_sub_list:
+                    html_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
+                    current_sub_list = [] # Reseteamos la lista de sub-elementos.
+
+                # 5. Transformamos el <li> del encabezado en un párrafo <p> para que no sea un item de lista.
+                html_fragments.append(f"<p>{str(strong_child)}</p>")
+            else:
+                # 6. Si no es un encabezado, es un sub-elemento. Lo añadimos a la lista actual.
+                current_sub_list.append(str(li))
+
+        # 7. Después del bucle, procesamos la última lista de sub-elementos que quedó pendiente.
+        if current_sub_list:
+            html_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
+            
+        # 8. Unimos todos los fragmentos para crear el HTML final y bien estructurado.
+        html_final = "".join(html_fragments)
+        # --- FIN DE LA NUEVA LÓGICA ---
+
+        return Response(html_final, mimetype='text/html; charset=utf-8')
 
     except Exception as e:
         print(f"Error en la API: {e}")
