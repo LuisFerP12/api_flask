@@ -18,17 +18,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 if not API_KEY:
     print("\nERROR: La variable de entorno OPENAI_API_KEY no está configurada.")
-    # Considera salir o manejar este caso de forma más robusta si la API es esencial.
-    # exit(1) 
-client = OpenAI(api_key=API_KEY)
-
+    client = None
+else:
+    client = OpenAI(api_key=API_KEY)
 
 # --- Lógica de Scraping (sin cambios) ---
 def scrape_dof_publications(url: str, department_name: str) -> list:
-    """
-    Realiza scraping de los títulos de publicaciones para una secretaría específica
-    del Diario Oficial de la Federación.
-    """
     print(f"Iniciando scraping para '{department_name}' en {url}")
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=20)
@@ -63,9 +58,12 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
         return []
 
 
-# --- Endpoint de la API (con la lógica de reestructuración de BeautifulSoup restaurada) ---
+# --- Endpoint de la API (modificado para generar solo el fragmento de HTML) ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
+    if not client:
+         return Response("La clave de API de OpenAI no está configurada.", status=500, mimetype='text/plain')
+
     departamentos_a_procesar = [
         'SECRETARIA DE HACIENDA Y CREDITO PUBLICO',
         'BANCO DE MEXICO'
@@ -77,7 +75,7 @@ def resumir_hacienda():
     for nombre_depto in departamentos_a_procesar:
         print(f"--- Procesando: {nombre_depto} ---")
         
-        # Título del departamento, fuera de la lista.
+        # Genera el título del departamento que será estilizado por la plantilla de correo
         html_final_parts.append(f'<h2>{nombre_depto}</h2>')
         
         titulos = scrape_dof_publications(url_dof, nombre_depto)
@@ -112,8 +110,6 @@ def resumir_hacienda():
             resumen_markdown = completion.choices[0].message.content
             resumen_html_body = markdown.markdown(resumen_markdown, extensions=['fenced_code'])
             
-            # --- INICIO DE LA LÓGICA DE REESTRUCTURACIÓN DE HTML CON BEAUTIFULSOUP ---
-            # Esta es la lógica que te gustaba, aplicada ahora dentro del bucle.
             soup = BeautifulSoup(resumen_html_body, 'html.parser')
             ul_tag = soup.find('ul')
             
@@ -132,12 +128,9 @@ def resumir_hacienda():
                     if current_sub_list:
                         reestructurado_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
                         current_sub_list = []
-                    
-                    # El <li> de encabezado se transforma en <p>
-                    reestructurado_fragments.append(f'<p style="margin-left: 20px; font-weight: bold; margin-bottom: 5px; margin-top: 1em;">{strong_child.get_text(strip=True)}</p>')
+                    # Transforma el encabezado en un párrafo con negritas, que será estilizado por la plantilla
+                    reestructurado_fragments.append(f'<p><strong>{strong_child.get_text(strip=True)}</strong></p>')
                 else:
-                    # El <li> normal se añade a la lista de sub-elementos.
-                    # Usamos `li.decode_contents()` para obtener solo el interior del <li>
                     current_sub_list.append(f"<li>{li.decode_contents()}</li>")
 
             if current_sub_list:
@@ -145,38 +138,15 @@ def resumir_hacienda():
                 
             html_depto_reestructurado = "".join(reestructurado_fragments)
             html_final_parts.append(html_depto_reestructurado)
-            # --- FIN DE LA LÓGICA DE REESTRUCTURACIÓN ---
 
         except Exception as e:
             print(f"Error en la API de OpenAI para '{nombre_depto}': {e}")
             html_final_parts.append("<p><em>Ocurrió un error al generar el resumen de IA.</em></p>")
 
-    if not html_final_parts:
-        return Response("No se pudo procesar ningún departamento.", status=500, mimetype='text/plain')
-
-    # Envolvemos todo en una estructura HTML completa para una mejor presentación
-    html_completo = f"""
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Resumen del DOF</title>
-        <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; margin: 2em; color: #333; }}
-            h1 {{ color: #1a2b4d; }}
-            h2 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 5px; margin-top: 2em;}}
-            ul {{ list-style-type: disc; padding-left: 40px; margin-top: 5px; }}
-            li {{ margin-bottom: 0.75em; }}
-        </style>
-    </head>
-    <body>
-        <h1>Resumen de Publicaciones del DOF</h1>
-        {''.join(html_final_parts)}
-    </body>
-    </html>
-    """
-    return Response(html_completo, mimetype='text/html; charset=utf-8')
+    # Une todas las partes en un solo fragmento de HTML, sin estructura de página completa.
+    html_fragment = ''.join(html_final_parts)
+    
+    return Response(html_fragment, mimetype='text/html; charset=utf-8')
 
 
 # --- Ejecutar la aplicación ---
