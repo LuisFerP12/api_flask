@@ -8,6 +8,8 @@ from collections import defaultdict
 from flask import Flask, Response
 from openai import OpenAI
 import markdown
+import re  # Añadido para expresiones regulares
+from urllib.parse import urljoin # Añadido para construir URLs completas
 
 # --- CONFIGURACIÓN SEGURA DE LA CLAVE DE API ---
 API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -22,7 +24,7 @@ if not API_KEY:
 else:
     client = OpenAI(api_key=API_KEY)
 
-# --- Lógica de Scraping (sin cambios) ---
+# --- Lógica de Scraping (modificada para devolver URLs) ---
 def scrape_dof_publications(url: str, department_name: str) -> list:
     print(f"Iniciando scraping para '{department_name}' en {url}")
     try:
@@ -44,8 +46,14 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
                 if link_a_eliminar: link_a_eliminar.decompose()
                 nombre_secretaria = tag_copy.get_text(strip=True)
                 texto_publicacion = link.get_text(strip=True)
+                # MODIFICACIÓN: Guardar título y URL completa
                 if nombre_secretaria and texto_publicacion:
-                    publicaciones_por_secretaria[nombre_secretaria].append(texto_publicacion)
+                    url_publicacion = link['href']
+                    full_url = urljoin(url, url_publicacion)
+                    publicaciones_por_secretaria[nombre_secretaria].append({
+                        "title": texto_publicacion,
+                        "url": full_url
+                    })
         
         department_publications = publicaciones_por_secretaria.get(department_name, [])
         print(f"Se encontraron {len(department_publications)} publicaciones para '{department_name}'.")
@@ -58,7 +66,7 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
         return []
 
 
-# --- Endpoint de la API (modificado para generar solo el fragmento de HTML) ---
+# --- Endpoint de la API (modificado para extraer y añadir tipo de cambio) ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
     if not client:
@@ -75,16 +83,44 @@ def resumir_hacienda():
     for nombre_depto in departamentos_a_procesar:
         print(f"--- Procesando: {nombre_depto} ---")
         
-        # Genera el título del departamento que será estilizado por la plantilla de correo
         html_final_parts.append(f'<h2>{nombre_depto}</h2>')
         
-        titulos = scrape_dof_publications(url_dof, nombre_depto)
+        # scrape_dof_publications ahora devuelve una lista de diccionarios
+        publicaciones = scrape_dof_publications(url_dof, nombre_depto)
         
-        if not titulos:
+        if not publicaciones:
             html_final_parts.append('<p><em>No se encontraron publicaciones para hoy.</em></p>')
             continue
 
-        texto_a_resumir = "\n".join(f"- {titulo}" for titulo in titulos)
+        # Extraer solo los títulos para el prompt de la IA
+        titulos_para_prompt = [pub['title'] for pub in publicaciones]
+        texto_a_resumir = "\n".join(f"- {titulo}" for titulo in titulos_para_prompt)
+        
+        # --- NUEVA LÓGICA PARA EXTRAER TIPO DE CAMBIO ---
+        tipo_de_cambio_str = None
+        if nombre_depto == 'BANCO DE MEXICO':
+            print("Buscando tipo de cambio para BANCO DE MEXICO...")
+            for pub in publicaciones:
+                if 'tipo de cambio' in pub['title'].lower():
+                    try:
+                        print(f"Encontrado enlace de tipo de cambio: {pub['url']}")
+                        response_tc = requests.get(pub['url'], headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=10)
+                        response_tc.raise_for_status()
+                        soup_tc = BeautifulSoup(response_tc.text, 'html.parser')
+                        
+                        contenido_td = soup_tc.find('td', class_='texto')
+                        if contenido_td:
+                            texto_completo = contenido_td.get_text()
+                            if 'el tipo de cambio obtenido el día de hoy fue de' in texto_completo:
+                                match = re.search(r'(\$\d+\.\d+\s*M\.N\.)', texto_completo)
+                                if match:
+                                    # Usar non-breaking space para mejor visualización en HTML
+                                    tipo_de_cambio_str = match.group(1).replace(' ', ' ')
+                                    print(f"Tipo de cambio extraído: {tipo_de_cambio_str}")
+                                    break # Dejar de buscar una vez encontrado
+                    except Exception as e:
+                        print(f"No se pudo extraer el tipo de cambio de {pub['url']}: {e}")
+
         prompt_usuario = f"""
         Tu tarea es analizar la siguiente lista de títulos de publicaciones del Diario Oficial de la Federación y generar un resumen ejecutivo.
         Sigue estas reglas ESTRICTAMENTE:
@@ -96,7 +132,7 @@ def resumir_hacienda():
         {texto_a_resumir}
         """
         
-        print(f"Enviando {len(titulos)} títulos a OpenAI para resumir...")
+        print(f"Enviando {len(titulos_para_prompt)} títulos a OpenAI para resumir...")
         
         try:
             completion = client.chat.completions.create(
@@ -128,7 +164,6 @@ def resumir_hacienda():
                     if current_sub_list:
                         reestructurado_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
                         current_sub_list = []
-                    # Transforma el encabezado en un párrafo con negritas, que será estilizado por la plantilla
                     reestructurado_fragments.append(f'<p><strong>{strong_child.get_text(strip=True)}</strong></p>')
                 else:
                     current_sub_list.append(f"<li>{li.decode_contents()}</li>")
@@ -138,12 +173,15 @@ def resumir_hacienda():
                 
             html_depto_reestructurado = "".join(reestructurado_fragments)
             html_final_parts.append(html_depto_reestructurado)
+            
+            # --- MODIFICACIÓN: Añadir el tipo de cambio al final del resumen de BANXICO ---
+            if tipo_de_cambio_str:
+                html_final_parts.append(f'<p><em>(Tipo de cambio: {tipo_de_cambio_str})</em></p>')
 
         except Exception as e:
             print(f"Error en la API de OpenAI para '{nombre_depto}': {e}")
             html_final_parts.append("<p><em>Ocurrió un error al generar el resumen de IA.</em></p>")
 
-    # Une todas las partes en un solo fragmento de HTML, sin estructura de página completa.
     html_fragment = ''.join(html_final_parts)
     
     return Response(html_fragment, mimetype='text/html; charset=utf-8')
