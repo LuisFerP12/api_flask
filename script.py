@@ -24,7 +24,7 @@ if not API_KEY:
 else:
     client = OpenAI(api_key=API_KEY)
 
-# --- Lógica de Scraping (sin cambios respecto a la versión anterior) ---
+# --- Lógica de Scraping (sin cambios) ---
 def scrape_dof_publications(url: str, department_name: str) -> list:
     print(f"Iniciando scraping para '{department_name}' en {url}")
     try:
@@ -65,7 +65,7 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
         return []
 
 
-# --- Endpoint de la API (modificado para inyectar tipo de cambio en el bullet point) ---
+# --- Endpoint de la API (con la corrección aplicada) ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
     if not client:
@@ -97,7 +97,6 @@ def resumir_hacienda():
         if nombre_depto == 'BANCO DE MEXICO':
             print("Buscando publicación de tipo de cambio para BANCO DE MEXICO...")
             for pub in publicaciones:
-                # Búsqueda más específica según tu solicitud
                 if 'tipo de cambio para solventar obligaciones' in pub['title'].lower():
                     try:
                         print(f"Encontrado enlace de tipo de cambio: {pub['url']}")
@@ -108,12 +107,17 @@ def resumir_hacienda():
                         contenido_td = soup_tc.find('td', class_='texto')
                         if contenido_td:
                             texto_completo = contenido_td.get_text(" ", strip=True)
-                            # Búsqueda del patrón exacto
-                            match = re.search(r'el tipo de cambio obtenido el día de hoy fue de\s*(\$\d+\.\d+\s*M\.N\.)', texto_completo)
+                            
+                            # --- LA CORRECCIÓN ESTÁ AQUÍ ---
+                            # Se añade re.IGNORECASE para que no falle por mayúsculas/minúsculas.
+                            match = re.search(r'el tipo de cambio obtenido el día de hoy fue de\s*(\$\d+\.\d+\s*M\.N\.)', texto_completo, re.IGNORECASE)
+                            
                             if match:
                                 tipo_de_cambio_str = match.group(1).replace(' ', ' ')
-                                print(f"Tipo de cambio extraído: {tipo_de_cambio_str}")
+                                print(f"Tipo de cambio extraído: {tipo_de_cambio_str}") # Este mensaje ahora debería aparecer.
                                 break
+                            else:
+                                print("ADVERTENCIA: Se encontró la página de TC, pero no el texto con el valor. El regex podría necesitar un ajuste.")
                     except Exception as e:
                         print(f"No se pudo extraer el tipo de cambio de {pub['url']}: {e}")
 
@@ -169,22 +173,16 @@ def resumir_hacienda():
                 
             html_depto_reestructurado = "".join(reestructurado_fragments)
 
-            # --- NUEVA LÓGICA PARA INYECTAR EL TIPO DE CAMBIO EN EL LUGAR CORRECTO ---
             if tipo_de_cambio_str:
                 print("Intentando inyectar el tipo de cambio en el resumen HTML...")
                 soup_depto = BeautifulSoup(html_depto_reestructurado, 'html.parser')
-                
-                # Busca el <li> que contenga 'Tipo de cambio' (ignora mayúsculas/minúsculas)
-                # Usamos una función lambda para buscar texto dentro del tag
                 li_tc = soup_depto.find(lambda tag: tag.name == 'li' and 'tipo de cambio' in tag.get_text(strip=True).lower())
 
                 if li_tc:
-                    # Añade el valor extraído al final del contenido del <li>
-                    li_tc.append(f" ({tipo_de_cambio_str})")
+                    li_tc.append(f" ({tipo_de_cambio_str})")
                     html_depto_reestructurado = str(soup_depto)
                     print("Inyección del tipo de cambio en el bullet point exitosa.")
                 else:
-                    # Si la IA no creó un bullet para el tipo de cambio, lo añadimos al final como fallback.
                     print("No se encontró el bullet point específico. Añadiendo el tipo de cambio al final de la sección.")
                     html_depto_reestructurado += f'<p><em>(Tipo de cambio para solventar obligaciones: {tipo_de_cambio_str})</em></p>'
             
