@@ -1,71 +1,4 @@
-# --- Imports ---
-import os
-import requests
-from bs4 import BeautifulSoup
-import urllib3
-import copy
-from collections import defaultdict
-from flask import Flask, Response
-from openai import OpenAI
-import markdown
-import re
-from urllib.parse import urljoin
-
-# --- CONFIGURACIÓN SEGURA DE LA CLAVE DE API ---
-API_KEY = os.environ.get("OPENAI_API_KEY")
-
-# --- Configuración ---
-app = Flask(__name__)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-if not API_KEY:
-    print("\nERROR: La variable de entorno OPENAI_API_KEY no está configurada.")
-    client = None
-else:
-    client = OpenAI(api_key=API_KEY)
-
-# --- Lógica de Scraping (sin cambios) ---
-def scrape_dof_publications(url: str, department_name: str) -> list:
-    print(f"Iniciando scraping para '{department_name}' en {url}")
-    try:
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=20)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        publicaciones_por_secretaria = defaultdict(list)
-        all_publications_links = soup.find_all('a', href=lambda href: href and 'nota_detalle.php' in href)
-        if not all_publications_links:
-            print(f"No se encontraron enlaces de publicaciones en {url}")
-            return []
-        for link in all_publications_links:
-            parent_tr = link.find_parent('tr')
-            if not parent_tr: continue
-            title_tag = parent_tr.find_previous('td', class_='subtitle_azul')
-            if title_tag:
-                tag_copy = copy.copy(title_tag)
-                link_a_eliminar = tag_copy.find('a')
-                if link_a_eliminar: link_a_eliminar.decompose()
-                nombre_secretaria = tag_copy.get_text(strip=True)
-                texto_publicacion = link.get_text(strip=True)
-                if nombre_secretaria and texto_publicacion:
-                    url_publicacion = link['href']
-                    full_url = urljoin(url, url_publicacion)
-                    publicaciones_por_secretaria[nombre_secretaria].append({
-                        "title": texto_publicacion,
-                        "url": full_url
-                    })
-        
-        department_publications = publicaciones_por_secretaria.get(department_name, [])
-        print(f"Se encontraron {len(department_publications)} publicaciones para '{department_name}'.")
-        return department_publications
-    except requests.exceptions.RequestException as e:
-        print(f"Error de red durante el scraping para '{department_name}': {e}")
-        return []
-    except Exception as e:
-        print(f"Error inesperado de scraping para '{department_name}': {e}")
-        return []
-
-
-# --- Endpoint de la API (con la corrección aplicada) ---
+# --- Endpoint de la API (con la corrección final y depuración mejorada) ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
     if not client:
@@ -104,22 +37,33 @@ def resumir_hacienda():
                         response_tc.raise_for_status()
                         soup_tc = BeautifulSoup(response_tc.text, 'html.parser')
                         
-                        contenido_td = soup_tc.find('td', class_='texto')
-                        if contenido_td:
-                            texto_completo = contenido_td.get_text(" ", strip=True)
+                        # --- CORRECCIÓN CLAVE ---
+                        # 1. Buscamos el div por su ID, que es más fiable.
+                        print("DEBUG: Buscando el contenedor de la nota (div id='DivDetalleNota')...")
+                        detalle_div = soup_tc.find('div', id='DivDetalleNota')
+
+                        if detalle_div:
+                            print("DEBUG: Contenedor encontrado. Extrayendo todo el texto...")
+                            # 2. Extraemos todo el texto del div, ignorando las etiquetas internas.
+                            texto_completo = detalle_div.get_text(" ", strip=True)
                             
-                            # --- LA CORRECCIÓN ESTÁ AQUÍ ---
-                            # Se añade re.IGNORECASE para que no falle por mayúsculas/minúsculas.
-                            match = re.search(r'el tipo de cambio obtenido el día de hoy fue de\s*(\$\d+\.\d+\s*M\.N\.)', texto_completo, re.IGNORECASE)
+                            # Imprimimos los primeros caracteres para verificar
+                            print(f"DEBUG: Texto extraído (inicio): '{texto_completo[:200]}...'")
+
+                            # 3. Buscamos el patrón en el texto extraído.
+                            print("DEBUG: Aplicando expresión regular para encontrar el valor del TC...")
+                            match = re.search(r'el tipo de cambio obtenido el día de hoy fue de\s*(\$\s*\d+\.\d+\s*M\.N\.)', texto_completo, re.IGNORECASE)
                             
                             if match:
                                 tipo_de_cambio_str = match.group(1).replace(' ', ' ')
-                                print(f"Tipo de cambio extraído: {tipo_de_cambio_str}") # Este mensaje ahora debería aparecer.
-                                break
+                                print(f"¡ÉXITO! Tipo de cambio extraído: {tipo_de_cambio_str}")
+                                break # Salimos del bucle porque ya lo encontramos
                             else:
-                                print("ADVERTENCIA: Se encontró la página de TC, pero no el texto con el valor. El regex podría necesitar un ajuste.")
+                                print("FALLO DE EXTRACCIÓN: Se encontró el contenedor, pero el patrón de texto del tipo de cambio no coincidió.")
+                        else:
+                            print("FALLO DE SCRAPING: No se pudo encontrar el contenedor <div id='DivDetalleNota'> en la página.")
                     except Exception as e:
-                        print(f"No se pudo extraer el tipo de cambio de {pub['url']}: {e}")
+                        print(f"ERROR INESPERADO al procesar la página del tipo de cambio: {e}")
 
         prompt_usuario = f"""
         Tu tarea es analizar la siguiente lista de títulos de publicaciones del Diario Oficial de la Federación y generar un resumen ejecutivo.
@@ -195,8 +139,3 @@ def resumir_hacienda():
     html_fragment = ''.join(html_final_parts)
     
     return Response(html_fragment, mimetype='text/html; charset=utf-8')
-
-
-# --- Ejecutar la aplicación ---
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
