@@ -8,8 +8,8 @@ from collections import defaultdict
 from flask import Flask, Response
 from openai import OpenAI
 import markdown
-import re  # Añadido para expresiones regulares
-from urllib.parse import urljoin # Añadido para construir URLs completas
+import re
+from urllib.parse import urljoin
 
 # --- CONFIGURACIÓN SEGURA DE LA CLAVE DE API ---
 API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -24,7 +24,7 @@ if not API_KEY:
 else:
     client = OpenAI(api_key=API_KEY)
 
-# --- Lógica de Scraping (modificada para devolver URLs) ---
+# --- Lógica de Scraping (sin cambios respecto a la versión anterior) ---
 def scrape_dof_publications(url: str, department_name: str) -> list:
     print(f"Iniciando scraping para '{department_name}' en {url}")
     try:
@@ -46,7 +46,6 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
                 if link_a_eliminar: link_a_eliminar.decompose()
                 nombre_secretaria = tag_copy.get_text(strip=True)
                 texto_publicacion = link.get_text(strip=True)
-                # MODIFICACIÓN: Guardar título y URL completa
                 if nombre_secretaria and texto_publicacion:
                     url_publicacion = link['href']
                     full_url = urljoin(url, url_publicacion)
@@ -66,7 +65,7 @@ def scrape_dof_publications(url: str, department_name: str) -> list:
         return []
 
 
-# --- Endpoint de la API (modificado para extraer y añadir tipo de cambio) ---
+# --- Endpoint de la API (modificado para inyectar tipo de cambio en el bullet point) ---
 @app.route('/resumir-hacienda', methods=['GET'])
 def resumir_hacienda():
     if not client:
@@ -85,23 +84,21 @@ def resumir_hacienda():
         
         html_final_parts.append(f'<h2>{nombre_depto}</h2>')
         
-        # scrape_dof_publications ahora devuelve una lista de diccionarios
         publicaciones = scrape_dof_publications(url_dof, nombre_depto)
         
         if not publicaciones:
             html_final_parts.append('<p><em>No se encontraron publicaciones para hoy.</em></p>')
             continue
 
-        # Extraer solo los títulos para el prompt de la IA
         titulos_para_prompt = [pub['title'] for pub in publicaciones]
         texto_a_resumir = "\n".join(f"- {titulo}" for titulo in titulos_para_prompt)
         
-        # --- NUEVA LÓGICA PARA EXTRAER TIPO DE CAMBIO ---
         tipo_de_cambio_str = None
         if nombre_depto == 'BANCO DE MEXICO':
-            print("Buscando tipo de cambio para BANCO DE MEXICO...")
+            print("Buscando publicación de tipo de cambio para BANCO DE MEXICO...")
             for pub in publicaciones:
-                if 'tipo de cambio' in pub['title'].lower():
+                # Búsqueda más específica según tu solicitud
+                if 'tipo de cambio para solventar obligaciones' in pub['title'].lower():
                     try:
                         print(f"Encontrado enlace de tipo de cambio: {pub['url']}")
                         response_tc = requests.get(pub['url'], headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=10)
@@ -110,14 +107,13 @@ def resumir_hacienda():
                         
                         contenido_td = soup_tc.find('td', class_='texto')
                         if contenido_td:
-                            texto_completo = contenido_td.get_text()
-                            if 'el tipo de cambio obtenido el día de hoy fue de' in texto_completo:
-                                match = re.search(r'(\$\d+\.\d+\s*M\.N\.)', texto_completo)
-                                if match:
-                                    # Usar non-breaking space para mejor visualización en HTML
-                                    tipo_de_cambio_str = match.group(1).replace(' ', ' ')
-                                    print(f"Tipo de cambio extraído: {tipo_de_cambio_str}")
-                                    break # Dejar de buscar una vez encontrado
+                            texto_completo = contenido_td.get_text(" ", strip=True)
+                            # Búsqueda del patrón exacto
+                            match = re.search(r'el tipo de cambio obtenido el día de hoy fue de\s*(\$\d+\.\d+\s*M\.N\.)', texto_completo)
+                            if match:
+                                tipo_de_cambio_str = match.group(1).replace(' ', ' ')
+                                print(f"Tipo de cambio extraído: {tipo_de_cambio_str}")
+                                break
                     except Exception as e:
                         print(f"No se pudo extraer el tipo de cambio de {pub['url']}: {e}")
 
@@ -172,11 +168,27 @@ def resumir_hacienda():
                 reestructurado_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
                 
             html_depto_reestructurado = "".join(reestructurado_fragments)
-            html_final_parts.append(html_depto_reestructurado)
-            
-            # --- MODIFICACIÓN: Añadir el tipo de cambio al final del resumen de BANXICO ---
+
+            # --- NUEVA LÓGICA PARA INYECTAR EL TIPO DE CAMBIO EN EL LUGAR CORRECTO ---
             if tipo_de_cambio_str:
-                html_final_parts.append(f'<p><em>(Tipo de cambio: {tipo_de_cambio_str})</em></p>')
+                print("Intentando inyectar el tipo de cambio en el resumen HTML...")
+                soup_depto = BeautifulSoup(html_depto_reestructurado, 'html.parser')
+                
+                # Busca el <li> que contenga 'Tipo de cambio' (ignora mayúsculas/minúsculas)
+                # Usamos una función lambda para buscar texto dentro del tag
+                li_tc = soup_depto.find(lambda tag: tag.name == 'li' and 'tipo de cambio' in tag.get_text(strip=True).lower())
+
+                if li_tc:
+                    # Añade el valor extraído al final del contenido del <li>
+                    li_tc.append(f" ({tipo_de_cambio_str})")
+                    html_depto_reestructurado = str(soup_depto)
+                    print("Inyección del tipo de cambio en el bullet point exitosa.")
+                else:
+                    # Si la IA no creó un bullet para el tipo de cambio, lo añadimos al final como fallback.
+                    print("No se encontró el bullet point específico. Añadiendo el tipo de cambio al final de la sección.")
+                    html_depto_reestructurado += f'<p><em>(Tipo de cambio para solventar obligaciones: {tipo_de_cambio_str})</em></p>'
+            
+            html_final_parts.append(html_depto_reestructurado)
 
         except Exception as e:
             print(f"Error en la API de OpenAI para '{nombre_depto}': {e}")
