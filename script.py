@@ -15,7 +15,6 @@ from urllib.parse import urljoin
 API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # --- Configuración ---
-# La variable 'app' se define aquí, ANTES de ser usada.
 app = Flask(__name__)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -25,7 +24,7 @@ if not API_KEY:
 else:
     client = OpenAI(api_key=API_KEY)
 
-# --- Lógica de Scraping ---
+# --- Lógica de Scraping (sin cambios) ---
 def scrape_dof_publications(url: str, department_name: str) -> list:
     print(f"Iniciando scraping para '{department_name}' en {url}")
     try:
@@ -105,18 +104,12 @@ def resumir_hacienda():
                         response_tc.raise_for_status()
                         soup_tc = BeautifulSoup(response_tc.text, 'html.parser')
                         
-                        print("DEBUG: Buscando el contenedor de la nota (div id='DivDetalleNota')...")
                         detalle_div = soup_tc.find('div', id='DivDetalleNota')
-
                         if detalle_div:
-                            print("DEBUG: Contenedor encontrado. Extrayendo todo el texto...")
                             texto_completo = detalle_div.get_text(" ", strip=True)
-                            print(f"DEBUG: Texto extraído (inicio): '{texto_completo[:200]}...'")
-
-                            print("DEBUG: Aplicando expresión regular para encontrar el valor del TC...")
                             match = re.search(r'el tipo de cambio obtenido el día de hoy fue de\s*(\$\s*\d+\.\d+\s*M\.N\.)', texto_completo, re.IGNORECASE)
-                            
                             if match:
+                                # Usamos   para el espacio en HTML
                                 tipo_de_cambio_str = match.group(1).replace(' ', ' ')
                                 print(f"¡ÉXITO! Tipo de cambio extraído: {tipo_de_cambio_str}")
                                 break
@@ -127,13 +120,14 @@ def resumir_hacienda():
                     except Exception as e:
                         print(f"ERROR INESPERADO al procesar la página del tipo de cambio: {e}")
 
+        # --- CAMBIO PRINCIPAL: INSTRUCCIONES DEL PROMPT ---
+        # Se eliminó la regla de "Agrupar por Tema" y se reemplazó por una regla de "Un Punto por Publicación".
         prompt_usuario = f"""
         Tu tarea es analizar la siguiente lista de títulos de publicaciones del Diario Oficial de la Federación y generar un resumen ejecutivo.
         Sigue estas reglas ESTRICTAMENTE:
-        1.  **Formato de Salida**: Tu respuesta debe ser ÚNICAMENTE una lista de puntos (bullet points) en formato Markdown.
-        2.  **Sin Introducción ni Conclusión**: Tu respuesta debe empezar directamente con el primer bullet point (`-`).
-        3.  **Agrupa por Tema**: Agrupa los títulos relacionados bajo un punto principal en negrita (`**Tema Principal**`) y luego detalla con sub-puntos. Los subpuntos NO deben estar en negrita.
-        4.  **Lenguaje Claro**: Explica cada punto de forma clara y concisa.
+        1.  **Formato de Salida**: Tu respuesta debe ser ÚNICAMENTE una lista simple de puntos (bullet points) en formato Markdown. NO uses sub-puntos ni agrupes temas con encabezados en negrita.
+        2.  **Un Punto por Publicación**: Por CADA título de la lista, crea un único bullet point (`-`). Cada bullet debe explicar de forma clara y concisa el propósito de esa publicación.
+        3.  **Sin Introducción ni Conclusión**: Tu respuesta debe empezar directamente con el primer bullet point.
         Ahora, genera el resumen para la siguiente lista de publicaciones:
         {texto_a_resumir}
         """
@@ -150,49 +144,29 @@ def resumir_hacienda():
             )
             
             resumen_markdown = completion.choices[0].message.content
-            resumen_html_body = markdown.markdown(resumen_markdown, extensions=['fenced_code'])
-            
-            soup = BeautifulSoup(resumen_html_body, 'html.parser')
-            ul_tag = soup.find('ul')
-            
-            if not ul_tag:
-                html_final_parts.append(resumen_html_body)
-                continue
+            # --- CAMBIO PRINCIPAL: PROCESAMIENTO SIMPLIFICADO ---
+            # Ya no necesitamos reestructurar el HTML, solo lo convertimos y lo usamos.
+            resumen_html = markdown.markdown(resumen_markdown, extensions=['fenced_code'])
 
-            reestructurado_fragments = []
-            current_sub_list = []
-
-            for li in ul_tag.find_all('li', recursive=False):
-                strong_child = li.find('strong')
-                is_header = strong_child and li.get_text(strip=True) == strong_child.get_text(strip=True)
-
-                if is_header:
-                    if current_sub_list:
-                        reestructurado_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
-                        current_sub_list = []
-                    reestructurado_fragments.append(f'<p><strong>{strong_child.get_text(strip=True)}</strong></p>')
-                else:
-                    current_sub_list.append(f"<li>{li.decode_contents()}</li>")
-
-            if current_sub_list:
-                reestructurado_fragments.append(f"<ul>{''.join(current_sub_list)}</ul>")
-                
-            html_depto_reestructurado = "".join(reestructurado_fragments)
-
+            # Inyectamos el tipo de cambio si fue encontrado
             if tipo_de_cambio_str:
                 print("Intentando inyectar el tipo de cambio en el resumen HTML...")
-                soup_depto = BeautifulSoup(html_depto_reestructurado, 'html.parser')
+                # Usamos BeautifulSoup para modificar el HTML generado
+                soup_depto = BeautifulSoup(resumen_html, 'html.parser')
+                # Buscamos el <li> que hable del tipo de cambio
                 li_tc = soup_depto.find(lambda tag: tag.name == 'li' and 'tipo de cambio' in tag.get_text(strip=True).lower())
 
                 if li_tc:
+                    # Añadimos el valor entre paréntesis al final de ese <li>
                     li_tc.append(f" ({tipo_de_cambio_str})")
-                    html_depto_reestructurado = str(soup_depto)
+                    resumen_html = str(soup_depto) # Actualizamos el HTML con la modificación
                     print("Inyección del tipo de cambio en el bullet point exitosa.")
                 else:
+                    # Si por alguna razón la IA no crea el bullet, lo añadimos al final como respaldo.
                     print("No se encontró el bullet point específico. Añadiendo el tipo de cambio al final de la sección.")
-                    html_depto_reestructurado += f'<p><em>(Tipo de cambio para solventar obligaciones: {tipo_de_cambio_str})</em></p>'
+                    resumen_html += f'<p><em>(Tipo de cambio para solventar obligaciones: {tipo_de_cambio_str})</em></p>'
             
-            html_final_parts.append(html_depto_reestructurado)
+            html_final_parts.append(resumen_html)
 
         except Exception as e:
             print(f"Error en la API de OpenAI para '{nombre_depto}': {e}")
@@ -203,8 +177,6 @@ def resumir_hacienda():
     return Response(html_fragment, mimetype='text/html; charset=utf-8')
 
 
-# --- Ejecutar la aplicación (para despliegue en Gunicorn) ---
-# Gunicorn se encarga de ejecutar la 'app', no necesitas el if __name__... para Render
-# pero es buena práctica mantenerlo para pruebas locales.
+# --- Ejecutar la aplicación ---
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
